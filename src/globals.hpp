@@ -11,7 +11,7 @@
 #include "IMPEncoder.hpp"
 #include "IMPFramesource.hpp"
 
-#define MSG_CHANNEL_SIZE 20
+#define MSG_CHANNEL_SIZE 40  // Double buffer size to reduce packet loss
 #define NUM_AUDIO_CHANNELS 1
 #define NUM_VIDEO_CHANNELS 2
 
@@ -28,10 +28,8 @@ struct AudioFrame
 struct H264NALUnit
 {
 	std::vector<uint8_t> data;
-    /* timestamp fix, can be removed if solved
 	struct timeval time;
 	int64_t imp_ts;
-    */
 };
 
 struct jpeg_stream
@@ -134,5 +132,85 @@ extern std::atomic<char> global_rtsp_thread_signal;
 extern std::shared_ptr<jpeg_stream> global_jpeg[NUM_VIDEO_CHANNELS];
 extern std::shared_ptr<audio_stream> global_audio[NUM_AUDIO_CHANNELS];
 extern std::shared_ptr<video_stream> global_video[NUM_VIDEO_CHANNELS];
+
+// TimeManager - centralized time synchronization for audio/video
+class TimeManager {
+public:
+    static TimeManager& getInstance() {
+        static TimeManager instance;
+        return instance;
+    }
+
+    // Get a synchronized presentation time for video frames
+    struct timeval getVideoTime() {
+        std::lock_guard<std::mutex> lock(time_mutex);
+        if (!initialized) {
+            gettimeofday(&base_time, NULL);
+            initialized = true;
+            // Reset counters
+            video_frame_count = 0;
+            audio_frame_count = 0;
+        }
+
+        // Generate presentation time with steady incrementing
+        struct timeval current_time;
+        current_time.tv_sec = base_time.tv_sec + (video_frame_count / 25); // 25 fps
+        current_time.tv_usec = base_time.tv_usec + ((video_frame_count % 25) * 40000); // 40ms per frame
+
+        // Handle overflow in microseconds
+        if (current_time.tv_usec >= 1000000) {
+            current_time.tv_sec += 1;
+            current_time.tv_usec -= 1000000;
+        }
+        
+        video_frame_count++;
+        return current_time;
+    }
+
+    // Get a synchronized presentation time for audio frames
+    struct timeval getAudioTime() {
+        std::lock_guard<std::mutex> lock(time_mutex);
+        if (!initialized) {
+            gettimeofday(&base_time, NULL);
+            initialized = true;
+            // Reset counters
+            video_frame_count = 0;
+            audio_frame_count = 0;
+        }
+
+        // Each 1024 sample audio frame at 48kHz lasts 21.33 ms (1024/48000)
+        int64_t elapsed_us = static_cast<int64_t>(audio_frame_count * 21333);  // 21.333ms per frame
+        
+        struct timeval current_time;
+        current_time.tv_sec = base_time.tv_sec + (elapsed_us / 1000000);
+        current_time.tv_usec = base_time.tv_usec + (elapsed_us % 1000000);
+        
+        // Handle overflow in microseconds
+        if (current_time.tv_usec >= 1000000) {
+            current_time.tv_sec += 1;
+            current_time.tv_usec -= 1000000;
+        }
+        
+        audio_frame_count++;
+        return current_time;
+    }
+
+    // Reset the time base (e.g., when restarting streams)
+    void reset() {
+        std::lock_guard<std::mutex> lock(time_mutex);
+        initialized = false;
+        video_frame_count = 0;
+        audio_frame_count = 0;
+    }
+
+private:
+    TimeManager() : initialized(false), video_frame_count(0), audio_frame_count(0) {}
+    
+    std::mutex time_mutex;
+    bool initialized;
+    struct timeval base_time;
+    uint64_t video_frame_count;
+    uint64_t audio_frame_count;
+};
 
 #endif // GLOBALS_HPP

@@ -75,10 +75,9 @@ void IMPDeviceSource<FrameType, Stream>::deliverFrame()
             fFrameSize = nal.data.size();
         }
 
-        /* timestamp fix, can be removed if solved
+        // Use our pre-synchronized timestamps from TimeManager
+        // These are guaranteed to be consistent between audio and video
         fPresentationTime = nal.time;
-        */
-        gettimeofday(&fPresentationTime, NULL);
         
         memcpy(fTo, &nal.data[0], fFrameSize);
 

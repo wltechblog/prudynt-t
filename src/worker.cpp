@@ -355,49 +355,57 @@ void *Worker::stream_grabber(void *arg)
 #endif
                         H264NALUnit nalu;
 
-                        /* timestamp fix, can be removed if solved
+                        // Store original timestamp from encoder
                         nalu.imp_ts = stream.pack[i].timestamp;
-                        nalu.time = encoder_time;
-                        */
+                        
+                        // Get synchronized time from TimeManager for precise A/V sync
+                        nalu.time = TimeManager::getInstance().getVideoTime();
 
                         // We use start+4 because the encoder inserts 4-byte MPEG
                         //'startcodes' at the beginning of each NAL. Live555 complains
                         nalu.data.insert(nalu.data.end(), start + 4, end);
-                        if (global_video[encChn]->idr == false)
-                        {
+                        // Check if this is a parameter set NAL unit (SPS/PPS) or IDR frame
+                        bool isKeyFrame = false;
+                        
 #if defined(PLATFORM_T31) || defined(PLATFORM_T40) || defined(PLATFORM_T41)
-                            if (stream.pack[i].nalType.h264NalType == 7 ||
-                                stream.pack[i].nalType.h264NalType == 8 ||
-                                stream.pack[i].nalType.h264NalType == 5)
-                            {
-                                global_video[encChn]->idr = true;
-                            }
-                            else if (stream.pack[i].nalType.h265NalType == 32)
-                            {
-                                global_video[encChn]->idr = true;
-                            }
-#elif defined(PLATFORM_T10) || defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23)
-                            if (stream.pack[i].dataType.h264Type == 7 ||
-                                stream.pack[i].dataType.h264Type == 8 ||
-                                stream.pack[i].dataType.h264Type == 5)
-                            {
-                                global_video[encChn]->idr = true;
-                            }
-#elif defined(PLATFORM_T30)
-                            if (stream.pack[i].dataType.h264Type == 7 ||
-                                stream.pack[i].dataType.h264Type == 8 ||
-                                stream.pack[i].dataType.h264Type == 5)
-                            {
-                                global_video[encChn]->idr = true;
-                            }
-                            else if (stream.pack[i].dataType.h265Type == 32)
-                            {
-                                global_video[encChn]->idr = true;
-                            }
-#endif
+                        if (stream.pack[i].nalType.h264NalType == 7 ||  // SPS
+                            stream.pack[i].nalType.h264NalType == 8 ||  // PPS
+                            stream.pack[i].nalType.h264NalType == 5)    // IDR
+                        {
+                            global_video[encChn]->idr = true;
+                            isKeyFrame = true;
                         }
+                        else if (stream.pack[i].nalType.h265NalType == 32) // VPS for H.265
+                        {
+                            global_video[encChn]->idr = true;
+                            isKeyFrame = true;
+                        }
+#elif defined(PLATFORM_T10) || defined(PLATFORM_T20) || defined(PLATFORM_T21) || defined(PLATFORM_T23)
+                        if (stream.pack[i].dataType.h264Type == 7 ||   // SPS
+                            stream.pack[i].dataType.h264Type == 8 ||   // PPS
+                            stream.pack[i].dataType.h264Type == 5)     // IDR
+                        {
+                            global_video[encChn]->idr = true;
+                            isKeyFrame = true;
+                        }
+#elif defined(PLATFORM_T30)
+                        if (stream.pack[i].dataType.h264Type == 7 ||   // SPS
+                            stream.pack[i].dataType.h264Type == 8 ||   // PPS
+                            stream.pack[i].dataType.h264Type == 5)     // IDR
+                        {
+                            global_video[encChn]->idr = true;
+                            isKeyFrame = true;
+                        }
+                        else if (stream.pack[i].dataType.h265Type == 32) // VPS for H.265
+                        {
+                            global_video[encChn]->idr = true;
+                            isKeyFrame = true;
+                        }
+#endif
 
-                        if (global_video[encChn]->idr == true)
+                        // Always forward key frames (SPS/PPS/IDR) regardless of IDR state
+                        // Regular frames are only sent after we've seen at least one key frame
+                        if (global_video[encChn]->idr || isKeyFrame)
                         {
                             if (!global_video[encChn]->msgChannel->write(nalu))
                             {
@@ -521,13 +529,14 @@ void *Worker::stream_grabber(void *arg)
 #if defined(AUDIO_SUPPORT)
 static void process_audio_frame(int encChn, IMPAudioFrame &frame)
 {
+    // Store original timestamp for reference
     int64_t audio_ts = frame.timeStamp;
-    struct timeval encoder_time;
-    encoder_time.tv_sec = audio_ts / 1000000;
-    encoder_time.tv_usec = audio_ts % 1000000;
-
+    
+    // Get synchronized timestamp from TimeManager
+    struct timeval sync_time = TimeManager::getInstance().getAudioTime();
+    
     AudioFrame af;
-    af.time = encoder_time;
+    af.time = sync_time;  // Use synchronized time for consistent A/V sync
 
     uint8_t *start = (uint8_t *)frame.virAddr;
     uint8_t *end = start + frame.len;
